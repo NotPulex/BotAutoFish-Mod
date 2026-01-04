@@ -1,0 +1,16 @@
+{
+  "mappings": {
+    "com/seafucker/mixin/InGameHudAccessor": {
+      "subtitle": "field_2039:Lnet/minecraft/class_2561;",
+      "title": "field_2016:Lnet/minecraft/class_2561;"
+    }
+  },
+  "data": {
+    "named:intermediary": {
+      "com/seafucker/mixin/InGameHudAccessor": {
+        "subtitle": "field_2039:Lnet/minecraft/class_2561;",
+        "title": "field_2016:Lnet/minecraft/class_2561;"
+      }
+    }
+  }
+}
