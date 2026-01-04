@@ -1,0 +1,12 @@
+{
+  "required": true,
+  "package": "com.seafucker.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "InGameHudAccessor"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "refmap": "KedaGay-refmap.json"
+}
