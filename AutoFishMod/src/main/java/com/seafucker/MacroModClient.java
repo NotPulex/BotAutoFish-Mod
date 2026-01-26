@@ -1,11 +1,11 @@
 package com.seafucker;
 
-import com.seafucker.mixin.InGameHudAccessor;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
+import net.minecraft.client.gui.hud.InGameHud;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
 import net.minecraft.client.network.AbstractClientPlayerEntity;
@@ -49,6 +49,9 @@ public class MacroModClient implements ClientModInitializer {
     private int warningDelay = 0; 
     private String lastDebugText = "";
 
+    // CACHE PER LA REFLECTION (Per non cercare la variabile ogni tick)
+    private Field cachedTitleField = null;
+
     // TIMER ANTI-AFK
     private int afkLookTimer = 0; 
     private int timerA = 6000;    
@@ -63,7 +66,7 @@ public class MacroModClient implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
-        // REGISTRAZIONE TASTI - Categoria "AutoFishMod"
+        // REGISTRAZIONE TASTI
         this.toggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "Attiva/Disattiva Fishing", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_M, "AutoFishMod"));
 
@@ -97,14 +100,10 @@ public class MacroModClient implements ClientModInitializer {
 
             if (!botEnabled && !debugEnabled) return;
 
-            // --- 2. RADAR PLAYER (Con Cambio Slot Reflection) ---
+            // --- 2. RADAR PLAYER ---
             if (botEnabled && isPlayerNearby(client, 8.0)) {
                 this.botEnabled = false; 
-                
-                if (client.player.fishHook != null) {
-                    forceChangeSlot(client);
-                }
-                
+                if (client.player.fishHook != null) forceChangeSlot(client);
                 sendPrivateMessage(client, "§c[RADAR] §4GIOCATORE RILEVATO! §cBot Spento.");
                 return; 
             }
@@ -123,23 +122,21 @@ public class MacroModClient implements ClientModInitializer {
                 return;
             }
 
-            // Controllo Inventario Pieno (Con Cambio Slot Reflection)
+            // Controllo Inventario Pieno
             if (botEnabled && isInventoryFull(client)) {
                 this.botEnabled = false;
-                
-                if (client.player.fishHook != null) {
-                    forceChangeSlot(client);
-                }
-                
+                if (client.player.fishHook != null) forceChangeSlot(client);
                 sendPrivateMessage(client, "§c[KedaBot] Inventario pieno! Pesca interrotta.");
                 return;
             }
 
-            // --- 5. LOGICA DI PESCA ---
-            InGameHudAccessor hud = (InGameHudAccessor) client.inGameHud;
-            Text title = hud.getTitle();
+            // --- 5. LOGICA DI PESCA (SCANNER INTELLIGENTE) ---
+            
+            // Usiamo la funzione di ricerca avanzata
+            Text title = findHudTitle(client.inGameHud);
 
             if (title == null || title.getString().trim().isEmpty()) {
+                // Se non troviamo il titolo (o non c'è il minigioco), lanciamo la canna
                 if (botEnabled && client.player.fishHook == null && castRodDelay == 0) {
                     rightClick(client);
                     castRodDelay = 40; 
@@ -147,73 +144,85 @@ public class MacroModClient implements ClientModInitializer {
                 return;
             }
 
+            // Se troviamo il titolo, procediamo!
             if (debugEnabled) analyzeColorsForDebug(client, title);
             if (botEnabled) analyzeAndFish(client, title);
         });
     }
 
-    // --- FUNZIONE FORCE CHANGE SLOT (REFLECTION) ---
-    // Questa funzione bypassa i controlli di sicurezza usando la "forza bruta"
+    // --- SCANNER INTELLIGENTE PER IL TITOLO ---
+    // Cerca automaticamente la variabile giusta
+    private Text findHudTitle(InGameHud hud) {
+        if (hud == null) return null;
+
+        // 1. Se abbiamo già trovato il campo giusto in passato, usiamolo (veloce)
+        if (cachedTitleField != null) {
+            try {
+                Text t = (Text) cachedTitleField.get(hud);
+                return t;
+            } catch (Exception e) {
+                cachedTitleField = null; // Se fallisce, resetta e cerca di nuovo
+            }
+        }
+
+        // 2. Se non sappiamo qual è il campo, SCANSIONIAMO TUTTO
+        // Cerca tutti i campi di tipo "Text" dentro InGameHud
+        for (Field f : InGameHud.class.getDeclaredFields()) {
+            if (f.getType().isAssignableFrom(Text.class)) { // È un testo?
+                try {
+                    f.setAccessible(true); // Rendilo leggibile
+                    Text t = (Text) f.get(hud);
+                    
+                    // Verifica: Contiene la barra del minigioco?
+                    if (t != null && t.getString().contains(BAR_CHAR)) {
+                        // Trovato! Salviamolo per il futuro
+                        cachedTitleField = f;
+                        // LOGGER.info("Campo Titolo Trovato: " + f.getName()); // Debug
+                        return t;
+                    }
+                } catch (Exception e) {
+                    // Ignora errori di accesso
+                }
+            }
+        }
+        
+        return null;
+    }
+
+    // --- HELPER SLOT (REFLECTION) ---
     private void forceChangeSlot(MinecraftClient client) {
         if (client.player == null) return;
         try {
-            // Proviamo a cercare il campo con il nome in codice "field_7545" (Produzione/Server)
             Field f = net.minecraft.entity.player.PlayerInventory.class.getDeclaredField("field_7545");
-            f.setAccessible(true); // Scassiniamo la serratura (Rendiamo pubblico il campo privato)
+            f.setAccessible(true);
             int current = f.getInt(client.player.getInventory());
             f.setInt(client.player.getInventory(), (current + 1) % 9);
         } catch (Exception e) {
             try {
-                // Se fallisce (magari siamo in Dev), proviamo il nome "selectedSlot"
                 Field f2 = net.minecraft.entity.player.PlayerInventory.class.getDeclaredField("selectedSlot");
                 f2.setAccessible(true);
                 int current = f2.getInt(client.player.getInventory());
                 f2.setInt(client.player.getInventory(), (current + 1) % 9);
-            } catch (Exception ex) {
-                // Se fallisce tutto, pazienza, non crashiamo il gioco
-                LOGGER.error("Impossibile cambiare slot: " + ex.getMessage());
-            }
+            } catch (Exception ex) {}
         }
     }
 
-    // --- FUNZIONE RADAR ---
+    // --- ALTRE FUNZIONI ---
     private boolean isPlayerNearby(MinecraftClient client, double radius) {
         if (client.world == null || client.player == null) return false;
-        
         for (AbstractClientPlayerEntity otherPlayer : client.world.getPlayers()) {
             if (otherPlayer.getUuid().equals(client.player.getUuid())) continue;
-            
-            if (client.player.distanceTo(otherPlayer) <= radius) {
-                return true;
-            }
+            if (client.player.distanceTo(otherPlayer) <= radius) return true;
         }
         return false;
     }
 
-    // --- LOGICA ANTI-AFK ---
     private void handleAntiAfk(MinecraftClient client) {
-        if (releaseA) {
-            client.options.leftKey.setPressed(false);
-            releaseA = false;
-        }
-        if (releaseD) {
-            client.options.rightKey.setPressed(false);
-            releaseD = false;
-        }
+        if (releaseA) { client.options.leftKey.setPressed(false); releaseA = false; }
+        if (releaseD) { client.options.rightKey.setPressed(false); releaseD = false; }
 
-        if (timerA > 0) timerA--;
-        else {
-            client.options.leftKey.setPressed(true); 
-            releaseA = true; 
-            timerA = 6000;   
-        }
-
-        if (timerD > 0) timerD--;
-        else {
-            client.options.rightKey.setPressed(true); 
-            releaseD = true; 
-            timerD = 6100;   
-        }
+        if (timerA > 0) timerA--; else { client.options.leftKey.setPressed(true); releaseA = true; timerA = 6000; }
+        if (timerD > 0) timerD--; else { client.options.rightKey.setPressed(true); releaseD = true; timerD = 6100; }
 
         if (afkLookTimer > 0) afkLookTimer--;
         else {
@@ -225,7 +234,6 @@ public class MacroModClient implements ClientModInitializer {
         }
     }
 
-    // --- ALTRE FUNZIONI ---
     private void analyzeColorsForDebug(MinecraftClient client, Text title) {
         String currentTitleString = title.getString();
         if (currentTitleString.equals(lastDebugText)) return;
@@ -286,7 +294,29 @@ public class MacroModClient implements ClientModInitializer {
 
         if (shouldClick) {
             rightClick(client);
-            client.inGameHud.setOverlayMessage(Text.of("§a⚡ CLICK!"), false);
+            // Actionbar via reflection
+            try {
+                Text msg = Text.of("§a⚡ CLICK!");
+                Field f = InGameHud.class.getDeclaredField("field_2024");
+                f.setAccessible(true);
+                f.set(client.inGameHud, msg);
+            } catch(Exception e) {
+                try {
+                    // Fallback scanner per Actionbar se field_2024 fallisce
+                    for(Field f : InGameHud.class.getDeclaredFields()) {
+                         if(f.getType().isAssignableFrom(Text.class)) {
+                             f.setAccessible(true);
+                             // Proviamo a scrivere in tutti i campi Text che non sono il titolo (rischioso ma efficace)
+                             // Per sicurezza usiamo solo overlayMessage se lo troviamo per nome
+                             if (f.getName().equals("overlayMessage")) {
+                                 f.set(client.inGameHud, Text.of("§a⚡ CLICK!"));
+                                 break;
+                             }
+                         }
+                    }
+                } catch (Exception ex) {}
+            }
+            
             clickCooldown = 5; 
             int randomDelay = maxRecastDelay > 0 ? random.nextInt(maxRecastDelay + 1) : 0;
             castRodDelay = 5 + randomDelay; 
@@ -306,7 +336,6 @@ public class MacroModClient implements ClientModInitializer {
         }
     }
 
-    // Utilizziamo il metodo getStack(i) che è sicuro e pubblico
     private boolean isInventoryFull(MinecraftClient client) {
         if (client.player == null) return false;
         for (int i = 9; i < 36; i++) {
@@ -316,12 +345,8 @@ public class MacroModClient implements ClientModInitializer {
         return true; 
     }
 
-    // --- GUI CONFIGURAZIONE ---
     public static class FishingConfigScreen extends Screen {
-
-        public FishingConfigScreen() {
-            super(Text.of("KedaBot Config"));
-        }
+        public FishingConfigScreen() { super(Text.of("KedaBot Config")); }
 
         @Override
         protected void init() {
@@ -350,7 +375,6 @@ public class MacroModClient implements ClientModInitializer {
         public void render(DrawContext context, int mouseX, int mouseY, float delta) {
             context.fill(0, 0, this.width, this.height, 0xA0000000); 
             super.render(context, mouseX, mouseY, delta);
-
             context.drawCenteredTextWithShadow(this.textRenderer, Text.of("§bConfigurazione KedaBot"), this.width / 2, this.height / 2 - 60, 0xFFFFFFFF);
             
             float seconds = MacroModClient.maxRecastDelay / 20.0f;
@@ -362,8 +386,6 @@ public class MacroModClient implements ClientModInitializer {
         }
         
         @Override
-        public boolean shouldPause() {
-            return false;
-        }
+        public boolean shouldPause() { return false; }
     }
 }
